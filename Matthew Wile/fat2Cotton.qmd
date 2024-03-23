@@ -1,0 +1,793 @@
+---
+title: "Trading The Winds : A Comprehensive Algorithmic Trading Strategy on American Cotton"
+format: html
+editor: visual
+author: "Brooklyn Holt and Matthew Wile"
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include = FALSE}
+# -------------------------------------------------
+# SETUP
+# -------------------------------------------------
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, tidy = FALSE, strip.white = TRUE, cache = TRUE)
+options(scipen = 999)
+```
+
+## Cotton No. 2 Futures
+
+#### About Cotton Contracts ([ICE Futures U.S.](https://www.ice.com/products/254/Cotton-No-2-Futures){style="color: #006400"}):
+
+-   **Symbol**: CT
+-   **Market**: Intercontinental Exchange (ICE)
+-   **Size**: 50,000 pounds net weight
+-   **Series**: March, May, July, October, December
+-   **Settlement**: Physical Delivery
+-   **Delivery Locations**:
+    -   Galveston, TX
+    -   Houston, TX
+    -   Dallas/Ft. Worth, TX
+    -   Memphis, TN
+    -   Greenville/Spartanburg, SC
+
+#### Texas Growing Season ([Texas A&M](https://cottonbugs.tamu.edu/cotton-production-regions-of-texas/#:~:text=Cotton%20is%20planted%20during%20March,pounds%20of%20lint%20per%20acre.){style="color: #006400"}):
+
+-   Planted during March
+-   Harvested August through October
+-   Irrigated yields average 750 to 1,250 pounds of lint per acre
+-   Dryland yields average 400 pounds of lint per acre
+
+```{r}
+# -------------------------------------------------
+# LOAD LIBRARIES
+# -------------------------------------------------
+
+library(tidyverse)
+library(riem)
+library(plotly)
+library(tsibble)
+library(feasts)
+library(mapview)
+library(tidyquant)
+library(leaflet)
+library(furrr)
+library(data.table)
+library(foreach)
+library(doParallel)
+library(xts)
+library(sjPlot)
+```
+
+```{r}
+# -------------------------------------------------
+# CREATE FUNCTIONS
+# -------------------------------------------------
+
+# First x percent of data set
+first_percent <- function(x, percent) {
+  head(x, ceiling(nrow(x)*percent/100))
+}
+# Last x percent of data set
+last_percent <- function(x, percent) {
+  tail(x, ceiling(nrow(x)*percent/100))
+}
+```
+
+```{r}
+# -------------------------------------------------
+# DEFINE COLORS
+# -------------------------------------------------
+
+brown = "#634929"
+green = "#006400"
+
+```
+
+```{r}
+# -------------------------------------------------
+# COTTON DATA
+# -------------------------------------------------
+
+# Import Cotton
+cotton <- tidyquant::tq_get("CT=F",
+                  get = "stock.prices") %>% 
+  dplyr::mutate(symbol = stringr::str_replace_all(symbol, 
+                                                  pattern = "=F", 
+                                                  replacement = ""))
+# Create Cotton TK
+cotton_tk <- cotton %>% 
+  dplyr::rename_all(tools::toTitleCase) %>% 
+  timetk::tk_xts(date_var = Date) %>% 
+  quantmod::adjustOHLC(.,
+                       use.Adjusted = T) %>% 
+  timetk::tk_tbl(rename_index = "Date") %>% 
+  dplyr::select(-Adjusted) %>% 
+  dplyr::rename(date = Date)
+
+#Create Cotton TSibble
+cotton_tsib <- cotton %>% 
+  dplyr::select(symbol, date, adjusted) %>% 
+  tsibble::as_tsibble(key = symbol, index = date) %>% 
+  tsibble::group_by_key() %>% 
+  tsibble::index_by(freq = ~ yearmonth(.)) %>%
+  dplyr::summarise(adjusted = mean(adjusted, na.rm = TRUE),
+                   .groups = "keep") %>% 
+  dplyr::mutate(change = adjusted - lag(adjusted)) %>% 
+  tidyr::drop_na() %>% 
+  tsibble::fill_gaps()
+```
+
+```{r}
+# STL decomposition (Adjusted, Trend, Seasonality, Remainder)
+cottonSTL <- cotton_tsib %>%
+  fabletools::model(feasts::STL(adjusted ~ season(window = 13))) %>%
+  fabletools::components() %>%
+  ggplot2::autoplot(color = c(green))
+cottonSTL
+```
+
+#### Wind
+
+-   Knots
+
+    -   Unit of speed equal to one nautical mile per hour
+        -   1 Knot = 1.852 km/h
+        -   1 Knot = 1.151 mph
+
+#### Wind and Cotton:
+
+![**What's a cotton plant actually look like?**](images/fullplant.png)
+
+-   Wind Sandblasting ([Plain Cotton Cooperative Association (PCCA)](https://pcca.com/article/withstanding-windy-weather/){style="color: #006400"}):
+
+    -   When wind passes over bare soil it picks up small particles of soil, blasting it into cotton plants. The particles damage young plants, damaging leaves and stems.
+    -   Usually happens in the spring.
+
+    ![**Okay, but what's actually being picked?**](images/uplandcotton.png)
+
+-   Boll Shedding
+
+    -   Once the bolls have opened, strong winds can dislodge the bolls of the cotton plant, resulting in lower yields.
+
+-   Spraying
+
+    -   Cotton is sprayed with herbicides and pesticides throughout its growing season.
+    -   Prior to harvest it will be sprayed with a Harvest Aid (Desiccants) which kills the plant tissue eliminating the plants ability to undergo defoliation.
+        -   Defoliants can be sprayed on high-yielding cotton to remove the leaves from the plant for a cleaner harvest.
+    -   Spraying should only be done when wind gusts are less than 7 mph (6.08283 kn) to maximize effectiveness and minimize spray drift
+        -   Spray drift ([United States Environmental Protection Agency](https://www.epa.gov/reducing-pesticide-drift/introduction-pesticide-drift){style="color: #006400"}): When chemicals are carried by wind away from the targeted area.
+    -   If spraying is done too early or too late to avoid a strong wind it will not have optimal results.
+
+#### Rain and Cotton ([Cotton Climate and Soils](https://www.ikisan.com/ap-cotton-climateandsoils.htm#:~:text=Warm%20season%20(tropical)%20crop.,is%20necessary%20for%20higher%20yields.){style="color: #006400"})
+
+-   Cotton requires 500mm of rain per year to produce economic yields
+-   50 cm of rain is necessary for higher yields
+-   Rain during harvest can stall harvest and negatively affect yield
+-   Cotton is a fairly drought tolerant plant
+-   Cotton fields are normally irrigated, meaning that even without continuous rain, cotton still receives the water required.
+
+#### Heat and Cotton ([Temperature Requirements](https://typeset.io/questions/what-are-the-sun-and-rain-requirements-of-the-cotton-plant-ege9uqjo71){style="color: #006400"})
+
+-   Cotton requires:
+    -   Minimum soil temperature of 10-12°C (50-54°F) for germination
+    -   Optimal air temperate for development is 25-30°C (77-86°F)
+    -   Air temperature should not exceed 36°C (97°F)
+-   Throughout all of the growing season temperatures must remain above freezing (0°C or 32°F).
+
+## Model Implementation
+
+#### Data
+
+-   Cotton N°2 Prices
+-   Weather Data
+    -   RIEM R Package
+        -   Access weather data from any airport station in the world through the Iowa Mesonet Website
+
+#### **Identifying Locations**
+
+-   High yields in the areas surrounding the Mississippi River
+
+![Cotton Production by County - 2022](images/cotton2022.png)
+
+##### Our Locations (Airports)
+
+-   Blytheville, AR
+    -   Municipal and International Airports
+-   College City, AR
+-   Corning, AR
+-   Jonesboro, AR
+-   Walnut Ridge, AR
+-   West Memphis, AR
+-   Kennett, MO
+-   Malden, MO
+-   Poplar Bluff, MO
+-   Sikeston, MO
+-   Batesville, MS
+-   Clarksdale, MS
+-   Olive Branch, MS
+-   Oxford, MS
+-   Covington, TN
+-   Dyersburg, TN
+-   Memphis, TN
+-   Millington, TN
+
+```{r}
+# -------------------------------------------------
+# DATA CONVERSION
+# -------------------------------------------------
+
+msD <- read_rds("dataset.rds")
+
+wind <- msD %>% 
+  dplyr::select(station, lon, lat, valid, tmpf, dwpf, relh, sknt, p01i) %>% 
+  tidyr::drop_na() 
+
+# Basic summary to see how many observations exist from each station
+# Note this would like quite different without the previous drop_na
+counts <- wind %>% 
+  dplyr::group_by(station) %>% 
+  dplyr::summarise(`Total Observations` = n())
+```
+
+```{r}
+# -------------------------------------------------
+# DATA PREPARATION
+# -------------------------------------------------
+
+# Prepares wind dataframe for rbind
+windy <- wind %>% 
+  dplyr::select(station,
+                valid,
+                sknt) %>% 
+  dplyr::rename(id = station,
+                value = sknt)
+
+# Prepares cotton dataframe for rbind
+cottony <- cotton %>% 
+  dplyr::select(symbol,
+                date,
+                adjusted) %>% 
+  dplyr::rename(id = symbol,
+                valid = date,
+                value = adjusted)
+```
+
+```{r}
+#Calculate daily average peak wind gusts
+avg_gusts <- wind %>%
+  dplyr::mutate(date = as.Date(valid)) %>%
+  dplyr::group_by(date) %>%
+  dplyr::summarize(daily_wind_speed = mean(sknt))
+
+#Merge Cotton and wind data by date
+cotton_wind <- merge(cotton, avg_gusts, by = "date")
+
+cotton_wind %>%
+  ggplot2::ggplot() +
+  ggplot2::geom_line(ggplot2::aes(x = date,
+                                  y = adjusted),
+                     color = brown) +  
+  ggplot2::geom_line(ggplot2::aes(x = date,
+                                  y = daily_wind_speed)
+                     , color = green) + 
+  ggplot2::labs(title = "Adjusted Values vs. Daily Average Wind Gusts",
+       x = "Date",
+       y = "Value") +
+  ggplot2::scale_y_continuous(name = "Value",
+                              sec.axis = sec_axis(~., name = "Daily Average Wind Gusts"))
+
+```
+
+```{r}
+# -------------------------------------------------
+# SIGNAL GENERATION
+# -------------------------------------------------
+
+# Reformatting
+generation <- wind
+generation$Date <- as.Date(generation$valid)
+generation$Time <- str_sub(generation$valid, 
+                           start = 12)
+# Prepping for signal generation
+sigsPrep <- generation %>% 
+  dplyr::filter(Time < "14:20:00" | Time > "21:00:00") %>% 
+  dplyr::select(-valid) %>% 
+  dplyr::rename(Station = station,
+                Longitude = lon,
+                Latitude = lat, 
+                Temperature = tmpf,
+                `Dew Point` = dwpf,
+                Humidity = relh,
+                `Wind Speed` = sknt,
+                Precipitation = p01i) %>% 
+  dplyr::select(-c(Station, 
+                   Longitude, 
+                   Latitude)) %>% 
+  dplyr::select(Date, 
+                Time, 
+                dplyr::everything())
+  
+# Summarizing meaningful weather patterns
+sigsGen <- sigsPrep %>% 
+  dplyr::group_by(Date) %>% 
+  dplyr::summarise(`Avg Temp` = mean(Temperature),
+                   `Avg Dew Point` = mean(`Dew Point`),
+                   `Avg Humidity` = mean(Humidity),
+                   `Avg Wind Speed` = mean(`Wind Speed`),
+                   `Avg Precipitation` = mean(Precipitation))
+
+# Subsetting relevant cotton data
+cottonFin <- cotton %>% dplyr::rename(Date = date) %>% 
+  dplyr::filter(Date >= "2020-01-01")
+
+cottonWide <- cottonFin %>% 
+  tidyr::pivot_wider(names_from = "symbol", 
+                     values_from = "adjusted")
+
+# Testing
+sigsGenTest <- dplyr::right_join(sigsGen, 
+                                 cottonWide, 
+                                 by = "Date") %>% 
+  dplyr::select(1:6, CT) %>% 
+  tidyr::pivot_longer(-Date, 
+                      names_to = "Series",
+                      values_to = "Value")
+
+# ggplot2::ggplot(sigsGenTest, aes(x = Date, 
+#                                  y = Value, 
+#                                  color = Series)) +
+#   ggplot2::geom_line()
+
+# plotly::ggplotly(sigsGenTestGraph)
+
+# Basic MLRegression
+
+
+# sigsGenTestWide <- tidyr::pivot_wider(sigsGenTest, names_from = "Series", values_from = "Value")
+# sigsGenTestModel <- lm(CT ~ `Avg Dew Point` + `Avg Humidity` + `Avg Precipitation` + `Avg Temp` + `Avg Wind Speed`, data = sigsGenTestWide)
+# sjPlot::tab_model(sigsGenTestModel)
+
+
+# This isn't terrible, about ~40% explainability
+# I also ran it based on winds from 3:00 PM until 9:00 PM, which are the only hours cotton isn't traded, but R-squared dropped to 36% and wind speed had the highest p-value
+
+```
+
+#### Indicators
+
+-   Look at how many times a day wind gusts are above average (+1) or below average (-1)
+-   Similar process for rain and temperature
+-   Sum of the observations for the day
+    -   a high number is a strong indicator of crop damage
+    -   a low number is a weak indicator of crop damage
+
+```{r}
+# -------------------------------------------------
+# GENERATION PREPARATION
+# -------------------------------------------------
+
+# Comparisons for whether a day is outside expected or not
+## Hard to compare using average when average changes throughout the year
+globalTemp <- mean(sigsGen$`Avg Temp`)
+globalDewPt <- mean(sigsGen$`Avg Dew Point`)
+globalHumidity <- mean(sigsGen$`Avg Humidity`)
+globalWind <- mean(sigsGen$`Avg Wind Speed`)
+globalPrecip <- mean(sigsGen$`Avg Precipitation`)
+
+# Summarizing signals per hour and creating a signal strength
+sigsGenPrep <- sigsPrep %>%
+  dplyr::mutate(Hour = as.numeric(str_sub(Time, end = 2)) + 1) %>% 
+  dplyr::group_by(Date, Hour) %>% 
+  dplyr::summarise(`Avg Temp` = mean(Temperature),
+                   `Avg Dew Point` = mean(`Dew Point`),
+                   `Avg Humidity` = mean(Humidity),
+                   `Avg Wind Speed` = mean(`Wind Speed`),
+                   `Avg Precipitation` = mean(Precipitation)) %>% 
+  # When wind conditions are low, go long, when high go short
+  dplyr::mutate(Signal_Wind = dplyr::case_when(`Avg Wind Speed` > globalWind ~ 1, 
+                                          `Avg Wind Speed` < globalWind ~ -1, 
+                                          TRUE ~ 0),
+                Signal_Rain = dplyr::case_when(`Avg Precipitation` > globalPrecip ~ 1, 
+                                          `Avg Precipitation` < globalPrecip ~ -1, 
+                                          TRUE ~ 0),
+                Signal_Temp = dplyr::case_when(`Avg Temp` > globalTemp ~ 1, 
+                                          `Avg Temp` < globalTemp ~ -1, 
+                                          TRUE ~ 0)) %>%
+  dplyr::select(Date, Hour, Signal_Wind, Signal_Rain, Signal_Temp) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::group_by(Date) %>% 
+  dplyr::summarise(Strength_Wind = sum(Signal_Wind),
+                   Strength_Rain = sum(Signal_Rain),
+                   Strength_Temp = sum(Signal_Temp))
+
+sigsGenPrep %>% 
+  dplyr::slice_head(n = 5) %>% 
+  knitr::kable()
+```
+
+#### Signals
+
+-   If the number of observations is greater than the optimal average observations, buy
+-   If the number of observations is less than the optimal average observations, sell
+
+#### Trades
+
+-   Signals are triggered at 3 PM as market closes at 2:30 PM but opens at 9 PM
+-   Trades are effective market open that evening, based on signals of the last segment
+
+#### Training Period
+
+-   75% of the data was used to create the training set
+    -   January 2, 2020 to March 1, 2023
+
+```{r}
+# -------------------------------------------------
+# STRATEGY
+# -------------------------------------------------
+
+#Define Strategy Function
+sig_strength_wind = -5
+sig_strength_rain = -20
+sig_strength_temp = -20
+
+# Split the data into training and test sets
+
+set <- dplyr::left_join(cottonFin, 
+                        sigsGenPrep,
+                        by = "Date")
+
+training_set <- set %>% first_percent(75)
+test_set <- set %>% last_percent(25)
+
+
+strategy <- function(data_in, 
+                     sig_strength_wind,
+                     sig_strength_rain,
+                     sig_strength_temp) {
+  
+  
+  # Step 1: Join the two datasets
+  sigsGenAppSTR <- data_in %>%
+    dplyr::mutate(
+      # Step 2: Calculate returns
+      retClOp = open / dplyr::lag(close) - 1,
+      retOpCl = (close - open) / close, 
+      retClCl = close / dplyr::lag(close) - 1,
+      
+      # Wind Strength
+      signal_wind = dplyr::case_when(
+        Strength_Wind < sig_strength_wind ~ 1,
+        Strength_Wind > sig_strength_wind ~ -1,
+        TRUE ~ 0,),
+        
+        #Rain Strength
+      signal_rain = dplyr::case_when(
+        Strength_Rain < sig_strength_rain ~ 1,
+        Strength_Rain > sig_strength_rain ~ -1,
+        TRUE ~ 0),
+        
+        
+        #Temp Strength
+      signal_temp = dplyr::case_when(
+        Strength_Temp < sig_strength_temp ~ 1,
+        Strength_Temp > sig_strength_temp ~ -1,
+        TRUE ~ 0)) %>% 
+    group_by(Date) %>% 
+    dplyr::mutate(total = mean(signal_wind, signal_rain, signal_temp)) %>% 
+    dplyr::ungroup()
+  
+  # Step 5: Perform additional calculations and select relevant columns
+  sigsGenAppSTR2 <- sigsGenAppSTR %>%
+    dplyr::mutate(signal = as.numeric(total)) %>% 
+    dplyr::select(-c(Strength_Wind, Strength_Rain, Strength_Temp, signal_wind, signal_rain, signal_temp, total)) 
+  sigsGenAppSTR2$signal[1] = 0
+  sigsGenAppSTR3 <- sigsGenAppSTR2 %>%  
+   dplyr::mutate(
+      trade = tidyr::replace_na(dplyr::lag(signal) - dplyr::lag(signal, n = 2L), 0),
+      pos = cumsum(trade),
+      ret_new = ifelse(pos == trade , pos * retOpCl, 0),
+      ret_exist = ifelse(pos != 0 & trade == 0, pos * retClCl, 0),
+      ret_others = dplyr::case_when((pos - trade) != 0 & trade != 0 ~ (1 + retClOp * (pos - trade)) * (1 + retOpCl * pos) - 1,
+                             TRUE ~ 0),
+      ret = tidyr::replace_na(ret_new + ret_exist + ret_others, 0),
+      CumEQ = cumprod(1 + ret)
+    ) 
+  
+  return(sigsGenAppSTR3)
+}
+
+train_results <- strategy(data_in = training_set, 
+                          sig_strength_wind = sig_strength_wind,
+                          sig_strength_rain = sig_strength_rain,
+                          sig_strength_temp = sig_strength_temp)
+```
+
+```{r, fig.keep='last'}
+# -------------------------------------------------
+# PLOTTING
+# -------------------------------------------------
+
+# Convert to xts
+train_resultsXTS <- train_results %>% 
+  timetk::tk_xts(date_var = Date)
+
+# Charting Results
+hold <- plot(train_resultsXTS$close, main = "Training Set - Results")
+xts::addSeries(
+  train_resultsXTS$trade,
+  main = "Trades",
+  on = NA,
+  type = "h",
+  col = green,
+  lty = 1,
+  lwd = 1,
+  pch = 0
+)
+xts::addSeries(
+  train_resultsXTS$pos,
+  main = "Positions",
+  on = NA,
+  type = "h",
+  col = green,
+  lty = 1,
+  lwd = 1,
+  pch = 0
+)
+xts::addSeries(
+  train_resultsXTS$CumEQ,
+  main = "CumEQ",
+  on = NA,
+  type = "l",
+  col = green,
+  lty = 1,
+  lwd = 1,
+  pch = 0
+)
+
+```
+
+#### Optimization
+
+-   Optimize for the total above average observations a day to determine potential crop damage
+-   Strength values range from -20 to 20
+    -   Test all numbers within this range
+
+```{r}
+# -------------------------------------------------
+# OPTIMIZATION
+# -------------------------------------------------
+
+out <- expand.grid(
+  sig_strength_wind = seq(from = -5, to = 0, by = 1),
+  sig_strength_rain = seq(from = -20, to = -18, by = 1),
+  sig_strength_temp = seq(from = -20, to = -18, by = 1))
+
+numcors <- parallel::detectCores() - 1
+cluster <- parallel::makeCluster(numcors)
+doParallel::registerDoParallel(cluster)
+
+opt <- foreach::foreach(
+  i = 1:nrow(out),
+  .combine = "cbind",
+  .packages = c(
+    "tidyverse",
+    "timetk",
+    "TTR",
+    "RTL",
+    "PerformanceAnalytics"
+  )
+) %dopar% {
+  as.numeric(RTL::tradeStats(
+    strategy(training_set,
+             out[i, "sig_strength_wind"],
+             out[i, "sig_strength_rain"],
+             out[i, "sig_strength_temp"]) %>%
+      dplyr::select(Date, ret)
+  ))
+}
+
+parallel::stopCluster(cluster)
+
+opt <- tibble::as.tibble(t(opt))
+colnames(opt) <- names(RTL::tradeStats(x = train_results %>% dplyr::select(Date, ret)))
+train_result <- cbind(out, opt)
+```
+
+#### Risk Appetite
+
+Optimal training period risk appetite:
+
+-   Sharpe ratio of 50.64%
+-   Omega of 12.22%
+-   In the market 99.95% of the time
+-   Maximum drawdown of 39.98%
+
+```{r}
+train_res <- train_result %>%
+  dplyr::arrange(dplyr::desc(train_result$Sharpe))
+
+train_res %>% 
+  dplyr::slice(1) %>% 
+  knitr::kable(digits = 4,
+               caption = "Training Strategy Statistics")
+```
+
+#### Test Period
+
+-   25% of the data was used to create the training set
+    -   March 1, 2023 to March 18, 2024
+-   Optimal signals:
+    -   Is wind strength greater than or less than -5
+    -   Is rain strength greater than or less than -20 (as rain is not required for cotton to grow due to irrigation)
+    -   Is temperature strength greater than or less than -20
+
+```{r, fig.keep='last'}
+test_results <- strategy(data_in = test_set, 
+                          sig_strength_wind = sig_strength_wind,
+                          sig_strength_rain = sig_strength_rain,
+                          sig_strength_temp = sig_strength_temp)
+# Convert to xts
+test_resultsXTS <- test_results %>% 
+  timetk::tk_xts(date_var = Date)
+
+# Charting Results
+hold <- plot(test_resultsXTS$close, main = "Testing Set - Results")
+xts::addSeries(
+  test_resultsXTS$trade,
+  main = "Trades",
+  on = NA,
+  type = "h",
+  col = green,
+  lty = 1,
+  lwd = 1,
+  pch = 0
+)
+xts::addSeries(
+  test_resultsXTS$pos,
+  main = "Positions",
+  on = NA,
+  type = "h",
+  col = green,
+  lty = 1,
+  lwd = 1,
+  pch = 0
+)
+xts::addSeries(
+  test_resultsXTS$CumEQ,
+  main = "CumEQ",
+  on = NA,
+  type = "l",
+  col = green,
+  lty = 1,
+  lwd = 1,
+  pch = 0
+)
+```
+
+```{r}
+# test_results <- strategy(data_in = test_set, 
+#                           sig_strength = sig_strength)
+
+risk <- data.frame(RTL::tradeStats(test_results %>% dplyr::select(Date,ret)))
+
+knitr::kable(risk, 
+      digits = 4,
+      caption = "Test Strategy Statistics")
+```
+
+#### Limitations
+
+-   Data availability
+
+    -   Our data are very complex and the sheer size is so great that it is difficult on processing power to pull and therefore train on the last 10 or even 5 years.
+    -   On top of that, each station reports inconsistently in terms of both time and measure
+
+-   Contributing factors
+
+    -   Of the weather measures we had access to, wind by far makes the most sense theoretically in terms of effect on plant growth. Cotton is a drought tolerant plant and many cotton fields are irrigated so it doesn't rely on rain. Cotton is sensitive to extreme warm and cold temperatures, anything below freezing (0°C or 32°F) will kill the plant, as will anything above 36°C or 97°F. That said, we must accept that so many different weather conditions may have an effect on futures price across multiple other regions.
+
+-   Time frame of futures trading
+
+    -   Cotton is not traded each month
+    -   It is still on a regular schedule which allows us to do an analysis like this at all
+
+#### Learnings
+
+The greatest learning lesson to take from our work is one applicable to every project in quantitative trading. Trust the madness!
+
+You cannot be effective with too slanted a focus: base the strategy in theory but be flexible in experiments
+
+#### Data Sources
+
+-   Yahoo Finance
+-   RIEM - Iowa Environment Mesonet
+
+```{r}
+# #indicator
+# sig_strength = 4
+# 
+# sigsGenApp <- dplyr::right_join(sigsGenPrep, cotton2022, by = "Date") %>% 
+#   dplyr::select(-3) 
+# 
+# training_set <- sigsGenApp
+# 
+# strategy <- function(data_in = data_in,
+#                      sig_strength = sig_strength) {
+# 
+# # Calculations & Transformations
+#   data_in <- data_in %>% 
+#     dplyr::mutate(
+#     # Close on Close over two days
+#     retClOp = open / dplyr::lag(close) - 1,
+#     # Close vs Open on same day
+#     retOpCl = (close - open) / close, 
+#     # Open vs prior day Close
+#     retClCl =  close / dplyr::lag(close) - 1,
+#     # signal
+#     signal = dplyr::case_when(Strength < sig_strength ~ 1,
+#                               Strength > sig_strength ~ -1,
+#                               TRUE ~ 0),
+#     trade = tidyr::replace_na(dplyr::lag(signal) - dplyr::lag(signal, n = 2L), 0),
+#     #position
+#     pos = cumsum(trade),
+#     # PL
+#     ret_new = ifelse(pos == trade , pos * retOpCl, 0),
+#     ret_exist = ifelse(pos != 0 & trade == 0, pos * retClCl, 0),
+#     ret_others = dplyr::case_when((pos - trade) != 0 &
+#                                   trade != 0 ~ (1 + retClOp * (pos - trade)) * (1 + retOpCl * pos) - 1,
+#                                   TRUE ~ 0),
+#     ret = ret_new + ret_exist + ret_others,
+#     # Compute Cumulative Equity or PL
+#     CumEQ = cumprod(1 + ret)
+#     )
+# return(data_in)
+# }
+# 
+# train_results <- strategy(data_in = sigsGenApp,
+#                           sig_strength = 4) 
+
+```
+
+```{r}
+# #Convert to xts
+# trn_results <- train_results %>% 
+#   timetk::tk_xts(date_var = date)
+# 
+# # Charting Results
+# plot(trn_results$close, main = "Strategy Results")
+# xts::addSeries(
+#   trn_results$trade,
+#   main = "Trades",
+#   on = NA,
+#   type = "h",
+#   col = green,
+#   lty = 1,
+#   lwd = 1,
+#   pch = 0
+# )
+# xts::addSeries(
+#   trn_results$pos,
+#   main = "Positions",
+#   on = NA,
+#   type = "h",
+#   col = green,
+#   lty = 1,
+#   lwd = 1,
+#   pch = 0
+# )
+# xts::addSeries(
+#   trn_results$CumEQ,
+#   main = "CumEQ",
+#   on = NA,
+#   type = "l",
+#   col = green,
+#   lty = 1,
+#   lwd = 1,
+#   pch = 0
+# )
+
+# Note that just holidng through the period returns 12.5% vs the 5% of our model
+
+
+```

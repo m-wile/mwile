@@ -1,0 +1,26 @@
+---
+title: "Matthew Wile"
+image: headshot.png
+about: 
+  template: morph
+  image-shape: rounded
+  image-width: 15em
+  links: 
+    - text: Email
+      icon: envelope
+      href: mailto:wile@ualberta.ca
+    - text: LinkedIn
+      icon: linkedin
+      href: https://www.linkedin.com/in/matthew-wile/
+    - text: GitHub
+      icon: github
+      href: https://github.com/m-wile
+---
+
+My name is Matthew Wile and I am an Honors Finance student at the Alberta School of Business. I have spent my academic career focused on acquiring an advanced knowledge of financial theory and markets with equal focus on collecting hard technical skills including data wrangling, visualization, and modelling. I am an excellent communicator, refuse failure in all its forms, and am committed to improving my abilities and increasing my knowledge base with the world's best.
+
+### **EDUCATION**
+
+**University of Alberta** \| Edmonton, AB, Canada
+
+BComm Honors - Finance \| September 2019 - April 2024

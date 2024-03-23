@@ -1,0 +1,25 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Matthew Wile"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: QTP_Wile copy.qmd
+        text: Exchange Rate Trading on Soybean Futures
+      - href: FAT_PROJ1.qmd
+        text: Volatility Trading on Crude Oil Options
+      - href: fat2cotton.qmd
+        text: Weather-Induced Trading on Cotton Futures
+
+format:
+  html:
+    theme: pulse
+    css: styles.css
+    toc: true
+
+editor: visual
+

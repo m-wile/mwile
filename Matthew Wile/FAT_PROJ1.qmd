@@ -1,0 +1,271 @@
+---
+title: "Trading Volatility On Options"
+author: "Matthew Wile & Aditya Sharma"
+date: "`r Sys.Date()`"
+format: html
+editor: visual
+---
+
+## The Theory
+
+Volatility is a measure of uncertainty. Trading volatility is therefore trading uncertainty or in other words, generating signals to understand how uncertain a market is verse how much uncertainty the market is pricing in. Anytime we read the word **volatility**, the immediate trigger in the mind should be uncertainty. The most basic foundational point then is as follows:
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(ggplot2)
+library(cowplot)
+library(RTL)
+library(plotly)
+library(slider)
+library(lubridate)
+options(scipen = 999)
+```
+
+```{r}
+volatile <- data.frame(Price = c(3,10,2,8,4,10,3), 
+                       Observations = 1:7) %>% 
+  ggplot(aes(x = Observations, y = Price)) +
+  geom_line() +
+  ylim(-0.5, 11.5)
+not_volatile <- data.frame(Price = c(3,5,4,7,3,5,3),
+                           Observations = 1:7) %>% 
+  ggplot(aes(x = Observations, y = Price)) +
+  geom_line() +
+  ylim(-0.5, 11.5)
+plot_grid(volatile, not_volatile, labels = "AUTO")
+```
+
+In the above, **A** is a more volatile market than **B.** It can be said with a relative degree of certainty that at the next observation, the movement of market **A** will be more severe/uncertain/unpredictable than the corresponding movement of market **B.**
+
+Even if this is accepted blindly, it is more useful to ask why this matters in the first place. To answer that, consider who cares about market uncertainty. This is best illustrated through the commodity space: a major consumer of crude oil devotes a significant amount of attention and energy into the price of crude oil and as such, extreme volatility is a major issue to them. How do they combat it? They hedge their risk.
+
+Hedging is simply a measure of buying coverage. Risk managers in this space attempt to manage price risk and price uncertainty by purchasing coverage that protects their shareholders from price uncertainty. When markets are uncertain, we can imagine that there is very little separation in chance of a major decrease vs a major increase. Put more simply, if the price is initially X, it is just as likely that the price increases to **1.5\*X** as if it were to decrease to **0.5\*X**. Even though the purchaser would greatly benefit from a price decrease, the fear of a price increase is great enough to purchase some form of coverage that protects against a price increase. Consult below:
+
+```{r}
+outcomes <- data.frame(Good = c(4,5,3,4,3,2,1,0),
+                       Okay = c(4,5,3,4,4,4,4,4),
+                       Bad = c(4,5,3,4,5,6,7,8),
+                       Observations = 1:8)
+outcomes <- reshape::melt(outcomes, id.vars = "Observations", variable.name = "series") %>% 
+  dplyr::mutate(Outcome = variable, Price = value)
+
+ggplot(outcomes, aes(Observations, Price)) +
+  geom_line(data = subset(outcomes, Observations<=4), linetype = 1) +
+  geom_line(data = subset(outcomes, Observations>=4), aes(color = Outcome), linetype = 5)
+```
+
+Therefore, if a market experiences increasing volatility, it follows that securities that provide coverage and lock in those Okay prices should increase in value a similar amount i.e.) they should match!
+
+The idea then is that this is something the market should **always** do. There should not be a case where a market becomes increasingly volatile and securities providing coverage for that uncertainty do not become more valuable, especially in a highly competitive and liquid market like crude oil. As such, if the match is not as it should be, there is a trading opportunity.
+
+This strategy involves creating long & short positions on securities that provide volatility coverage based on their movement as it pertains to observed volatility in the market.
+
+**Options derive their value from volatility.** Uncertainty, as discussed in the graph above, is what motivates large consumers with price risk to buy coverage. How does volatility affect the price of a simple call option?
+
+Let ***S*** equal the commodity price and ***X*** equal the strike price
+
+Imagine there is absolutely **no volatility** in the market whatsoever,
+
+-   No variation in S means that S~Today~ = S~Expiry~
+
+-   A call \@ X must have value **max(S~Today~ - X, 0**) at all times to avoid arbitrage opportunities
+
+-   In zero volatility environments, the price of any given option **must** be equal to its payoff
+
+Now, imagine there is **infinite volatility**,
+
+-   The range of possible stock prices in theory is **(-∞, ∞)**, meaning it could literally be equal to any possible digit.
+
+-   Every possible price is now equally likely to occur, which means S~Expiry~ is completely random
+
+-   That range is unimaginably vast and the variation is infinite, and based on what we've defined, does that mean the option value should be 0? Should it be infinite?
+
+    -   The argument for option value = 0
+
+        -   For every outcome, there must be an opposite outcome since the ranges are mirrored. Doesn't that mean the option has no value whatsoever?
+
+            -   **No**. We are in agreeance that the more volatile a market, the more valuable are options because they hedge risk. If stock price is currently \$40, but next week it could be \$-∞ or \$∞, **it's incredibly valuable to hedge your risk.** Remember, options derive their value from hedging risk, and large consumers don't really care that the price could potentially drop to \$-∞ because it could also potentially climb to \$∞, and that movement is just as likely as a movement to \$38 or \$42.
+
+    -   The argument for option value = ∞
+
+        -   Based on what we just defined, does it make sense then for an option in this situation to be infinitely valuable?
+
+            -   **No**. Remember than option prices are hedges based on the price of some underlying product. The example we gave relates to call options, giving the right to purchase the underlying for some predefined price. We just defined that the price must be greater than 0, but imagine if the underlying price is again \$40 and the goal is to purchase a call at strike price \$36.
+
+                -   Based on the work we've done so far, we know this option must be at least \$4 and the goal now is to define a maximum price. Imagine the opposite end of this price spectrum. What if the price for the option was \$37? We are dealing with infinite volatility after all! In this situation, we make profit off the purchase if S~Expiry~ \>= \$73. What if the price for the option was \$41, now we make a profit if S~Expiry~ \>= \$77 right? Wait a second... the consumer is trying to hedge their price risk aren't they? Why would they buy the right to buy at some price for more than the current price? They wouldn't
+
+                -   **This call option cannot be more than S~Today~, otherwise there will never be a market situation where purchasing it makes sense in this setting.**
+
+-   So, the range of our option price is defined as such:
+
+    -   **Call Option Price ∈ \[max(S~i~ - X, 0), S~i~\]**
+
+        -   In low volatility environments, price tends towards **max(S~i~ - X, 0)**
+
+        -   In high volatility environments, price tends towards **S~i~**
+
+With that, we understand why volatility gives options value and how we can use it to derive a trading strategy based on volatility. As mentioned, the goal is to observe crude oil markets and take advantage of moments where flat price movements don't match option price movements based on signals generated from short-term volatility observations.
+
+```{r}
+user <- "trading@ualberta.ca"
+pwrd <- "#5GvhnRCvk"
+fl_wti <- RTL::getPrices(feed = "CME_NymexFutures_EOD_continuous",
+                           contracts = paste0("CL_", sprintf("%0.3d", 1:24), "_Month"),
+                           from = "2018-01-01",
+                           iuser = user,
+                           ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::mutate(series = stringr::str_replace_all(series, c("_0" = "", "_Month" = ""))) %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::mutate(return = (log(value) / log(dplyr::lag(value))) - 1) %>% 
+  tidyr::drop_na()
+fl_wti_adj <- RTL::rolladjust(x = fl_wti, commodityname = c("cmewti"), rolltype = c("Last.Trade")) %>% 
+  dplyr::filter(series %in% c("CL01", "CL02", "CL03"))
+
+adj_plot <- plot_ly(fl_wti_adj, x =~ date, y =~ value, color =~ series, mode =~ "lines")
+```
+
+**Option Fetch**
+
+```{r}
+vals23F <- c(7250,7450,7650,7850,8050)
+opts23F <- c()
+for (i in 1:length(vals23F)){
+  opts23F <- c(opts23F, paste0("@LO23FC",vals23F[i]))
+}
+
+futs23F <- c("@CL23F")
+options23F <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+               contracts = opts23F,
+               from = "2022-12-01",
+               iuser = user,
+               ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+futures23F <- RTL::getPrices(feed = "CME_NymexFutures_EOD",
+                          contracts = futs23F,
+                          from = "2022-12-01",
+                          iuser = user,
+                          ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::filter(date <= "2022-12-15")
+og23F <- ggplot(options23F, aes(x = date, y = value, color = series)) +
+  geom_line()
+fg23F <- ggplot(futures23F, aes(x = date, y = value, color = series)) +
+  geom_line()
+
+vals23G <- c(7250,7450,7650,7850,8050)
+opts23G <- c()
+for (i in 1:length(vals23G)){
+  opts23G <- c(opts23G, paste0("@LO23GC",vals23G[i]))
+}
+
+futs23G <- c("@CL23G")
+options23G <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+               contracts = opts23G,
+               from = "2022-12-16",
+               iuser = user,
+               ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+futures23G <- RTL::getPrices(feed = "CME_NymexFutures_EOD",
+                          contracts = futs23G,
+                          from = "2022-12-16",
+                          iuser = user,
+                          ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::filter(date <= "2023-01-17")
+og23G <- ggplot(options23G, aes(x = date, y = value, color = series)) +
+  geom_line()
+fg23G <- ggplot(futures23G, aes(x = date, y = value, color = series)) +
+  geom_line()
+
+plot_grid(og23F, fg23F, og23G, fg23G, labels = "AUTO")
+
+
+```
+
+```{r}
+user <- "trading@ualberta.ca"
+pwrd <- "#5GvhnRCvk"
+v <- c(7250,7450,7650,7850,8050)
+vals <- rep(v, times=12)
+months <- rep(c("F","G","H","J","K","M","N","Q","U","V","X","Z"), times=length(v))
+mnc <- c()
+calls <- c()
+start <- "2022-11-22"
+for (i in 1:length(months)){
+  mnc <- c(mnc, paste0("@LO23",months[i],"C"))}
+for (i in 1:length(vals)) {
+  calls <- c(calls, paste0(mn[i], vals[i]))}
+calls23 <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+                            contracts = calls,
+                            from = start,
+                            iuser = user,
+                            ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::mutate(return = log(value / dplyr::lag(value)))
+puts <- c()
+mnp <- c()
+for (i in 1:length(months)){
+  mnp <- c(mnp, paste0("@LO23",months[i],"P"))}
+for (i in 1:length(vals)) {
+  puts <- c(puts, paste0(mnp[i], vals[i]))}
+puts23 <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+                            contracts = puts,
+                            from = start,
+                            iuser = user,
+                            ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::mutate(return = log(value / dplyr::lag(value)))
+futures23 <- RTL::getPrices(feed = "CME_NymexFutures_EOD_continuous",
+                               contracts = c("CL_001_Month"),
+                               from = start,
+                               iuser = user,
+                               ipassword = pwrd) %>% 
+  dplyr::rename(Front = CL_001_Month) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+futures_roll <- RTL::rolladjust(futures23, commodityname = c("cmewti"), rolltype = c("Last.Trade")) %>% 
+  dplyr::mutate(return = log(value / dplyr::lag(value)))
+crude2023 <- rbind(calls23, puts23, futures_roll) %>% 
+  plot_ly(x =~ date,
+          y =~ return,
+          color =~ series,
+          mode =~ "lines")
+```
+
+```{r}
+user <- "trading@ualberta.ca"
+pwrd <- "#5GvhnRCvk"
+s <- c(200)
+day_cutoff <- c(10)
+start <- "2022-11-22"
+fr <- futures_roll %>% 
+  dplyr::mutate(P1 = DescTools::RoundTo((value*100 - s), multiple = 25), P2 = DescTools::RoundTo((value*100 + s), multiple = 25)) %>% 
+  dplyr::mutate(MonthNum = lubridate::month(date)) %>% 
+  dplyr::mutate(Day = lubridate::day(date)) %>% 
+  dplyr::mutate(ct = dplyr::if_else(Day <= day_cutoff, MonthNum + 1, MonthNum + 2), Contract = dplyr::if_else(ct > 12, ct - 12, ct)) %>% 
+  dplyr::mutate(Month = lubridate::month(Contract, label = TRUE, abbr = FALSE))
+months <- futuresRef$ContractMonths
+frs <- dplyr::left_join(fr, months, by = "Month") %>% 
+  dplyr::select(date, P1, P2, Code)
+o1get <- dplyr::pull(fr, P1)
+o2get <- dplyr::pull(fr, P2)
+
+daily_get <- seq(from = o1get[1], to = o2get[1], by = 25)
+cls <- c()
+for (i in 1:length(daily_get)) {
+  cls <- c(cls, paste0("@LO23FC",daily_get[i]))
+}
+
+
+get_calls <- RTL::getPrices(feed = "CME_NymexOptions_EOD",
+                            contracts = cls,
+                            from = start,
+                            iuser = user,
+                            ipassword = pwrd) %>% 
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::mutate(return = log(value / dplyr::lag(value)))
+```

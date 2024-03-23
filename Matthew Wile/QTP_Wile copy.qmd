@@ -1,0 +1,305 @@
+---
+title: "Soybean Quantitative Trading Strategy"
+author: "Matthew Wile"
+date: "2023-12-06"
+format: html
+editor: visual
+---
+
+# [The Idea]{.underline}
+
+#### **Introducing...**
+
+A strategy designed to take advantage of daily exaggerations in price movements as they relate to the CME Soybean contract, making daily predictions of next-day changes based on the relationship between four indicators by suggesting an optimal portfolio with position size and direction metrics generating above-market returns on test data.
+
+#### **The Rationale**
+
+China is a major consumer and heavy importer of soybeans, typically purchasing from two nations in particular, the United States and Brazil. As is customary in international trade, most prices are paid in the currency of the producing nation, which is to say that Chinese soybean importers are converting money from their native Yuan to either American Dollars or Brazilian Reals to make purchases.
+
+Based on daily movements in the *CNY/USD* and *CNY/BRL* currency rates, there may be an opportunity to predict the movement of the front *ZS* soybean contract. If the movement in the *CNY/USD* rate exceeds that of the *CNY/BRL*, which is to say is more positive, it follows that it may be advantageous for a prospective Chinese importer to convert to American Dollars and purchase American soybeans, all else equal, suggesting an increase in the *ZS01* contract price.
+
+In an attempt to measure macroeconomic health on a daily level, signals also include the movements in the most representative American stock index, the S&P 500, and it's Brazilian equivalent, the Bovespa Index.
+
+#### **Digging Deeper**
+
+In order to understand the American export process, it is crucial to understand where these soybeans are coming from, where the contracts are being settled, and how they're getting across the world. To avoid high-level generalizations, I'll shift the focus to one specific state, in this case, Indiana. The United States Department of Agriculture (henceforth USDA) classifies Indiana as the 5th-largest producer of American soybeans, but *ZS* contract procedures for physical delivery allow only a single Indiana location for delivery without penalty, the small Lake Michigan steel port town of Burns Harbor.
+
+To achieve a deeper understanding, I talked with ***Drew Sherman***, the International Trade Director at the Indiana Department of Agriculture, to discuss the intricacies of the Indiana soybean market. He claims that soybeans, when physically delivered on this contract, are typically transported via Chicago to Burns Harbor solely for domestic consumption and distribution. That understood, consider that over 60% of American soybean exports trade out of the Mississippi-Gulf Coast region, far away from the major production centers. In these cases, agreements are made for soybeans to find their way to centers along the Ohio River on Indiana's southern border, most notably Jeffersonville, where they are loaded on barges and floated down the Ohio and eventually Mississippi River to Gulf Coast hubs where they meet ships bound for international destinations.
+
+The lasting impression is that this process is expensive and time-consuming but something still compels Chinese buyers to choose between American and Brazilian soybeans. Based on my discussion with Drew and my own knowledge, I suggest a significant determinant of this decision is local purchasing power and macroeconomic condition.
+
+# [The Model]{.underline}
+
+#### Asset Signals
+
+This strategy is a quantitative, high-frequency, unit-based strategy that tracks the movements of four assets and creates an daily optimal portfolio. Full adjustments back to net-zero are made at market close every single day, and a new optimal portfolio is created at the next market open depending on previous day movements. The four assets are:
+
+-   *CNY/USD* (exchange rate)
+
+-   *CNY/BRL* (exchange rate, implied by *CNY/CAD* & *CAD/BRL* relationship)
+
+-   *\^GSPC* (the S&P 500 Index, tracking American macroeconomic health)
+
+-   *\^BVSP* (the Bovespa Index, tracking Brazilian macroeconomic health)
+
+```{r, echo=FALSE, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(RTL)
+library(plotly)
+library(gt)
+library(gtExtras)
+user <- "trading@ualberta.ca"
+pwrd <- "#5GvhnRCvk"
+chn_usd <- tidyquant::tq_get("CNYUSD=X", from = "2010-01-01") %>% 
+  dplyr::select(symbol, date, close) %>% 
+  dplyr::mutate(return = (close - dplyr::lag(close)) / dplyr::lag(close)) %>% 
+  dplyr::select(-close) %>% 
+  tidyr::drop_na()
+chn_brl <- tidyquant::tq_get(c("CNYCAD=X", "CADBRL=X"), from = "2010-01-01") %>% 
+  dplyr::select(date, symbol, close) %>% 
+  tidyr::pivot_wider(names_from = "symbol", values_from = "close") %>% 
+  dplyr::mutate(`CNYBRL=X` = `CNYCAD=X` * `CADBRL=X`) %>% 
+  dplyr::select(date, `CNYBRL=X`) %>% 
+  tidyr::pivot_longer(`CNYBRL=X`, names_to = "symbol", values_to = "close") %>% 
+  dplyr::mutate(return = (close - dplyr::lag(close)) / dplyr::lag(close)) %>% 
+  dplyr::select(symbol, date, return) %>% 
+  tidyr::drop_na()
+sb <- RTL::getPrices(feed = "CME_CbotFuturesEOD_continuous",
+                      contracts = paste0("ZS_", sprintf("%0.3d", 1:24), "_Month"),
+                      from = "2010-01-01",
+                      iuser = user,
+                      ipassword = pwrd)
+soybeans <- sb %>% tidyr::pivot_longer(-date, names_to = "series", values_to = "value") %>% 
+  dplyr::mutate(series = stringr::str_replace_all(series, c("_0" = "", "_Month" = ""))) %>% 
+  dplyr::group_by(series) %>% 
+  dplyr::mutate(return = (value - dplyr::lag(value)) / dplyr::lag(value)) %>% 
+  tidyr::drop_na()
+soy_returns <- soybeans %>% dplyr::select(date, series, return) %>% 
+  tidyr::pivot_wider(names_from = series, values_from = return)
+soy_ret_adjusted <- RTL::rolladjust(x = soy_returns[, 1:2],
+                               commodityname = c("cmesoybean"),
+                               rolltype = c("Last.Trade"))
+soy_adjusted <- soy_ret_adjusted %>% 
+  tidyr::pivot_longer(-date, names_to = "symbol", values_to = "return") %>% 
+  dplyr::select(symbol, date, return) 
+brl_ind <- tidyquant::tq_get("^BVSP", from = "2010-01-01") %>% 
+  dplyr::select(symbol, date, adjusted) %>% 
+  dplyr::mutate(return = (adjusted - dplyr::lag(adjusted)) / dplyr::lag(adjusted)) %>% 
+  tidyr::drop_na() %>% 
+  dplyr::select(-adjusted)
+usd_ind <- tidyquant::tq_get("^GSPC", from = "2010-01-01") %>% 
+  dplyr::select(symbol, date, adjusted) %>% 
+  dplyr::mutate(return = (adjusted - dplyr::lag(adjusted)) / dplyr::lag(adjusted)) %>% 
+  tidyr::drop_na() %>% 
+  dplyr::select(-adjusted)
+strats <- rbind(soy_adjusted, chn_brl, chn_usd, brl_ind, usd_ind) %>% 
+  tidyr::pivot_wider(names_from = "symbol", values_from = "return")
+```
+
+#### Generating Trades
+
+The strategy watches these movements for the previous day, classifies the relationships, and comes to a conclusion for the portfolio that should be created the next day. The strategy specifies one of six possible positions that it suggests should be taken in the front *ZS* contract the next day and allocates the remainder into one of the two indexes, such that daily proportion of total units deployed is always 100%.
+
+Of particular note are the six possible positions for the front *ZS* contract, which are based on pre-defined and therefore optimizable parameters for quantifying strategy confidence. Defined as Very-Strong, Strong, and Weak, they are what ultimately determines the portfolio weights between the soybean portion and the index portion of the strategy.
+
+For example, consider these fictional data to illustrate how the model deploys capital:
+
+-   *CNY/USD* (+0.12%)
+
+-   *CNY/BRA* (+0.02%)
+
+-   *\^GSPC* (-0.03%)
+
+-   *\^BVSP* (+0.01%)
+
+In this situation, *CNY/USD* \> *CNY/BRA* with positive movements in both rates, and *\^GSPC* \< *\^BVSP* with opposite movements. These suggest that Chinese buyers may become more partial to purchasing American soybeans over Brazilian soybeans, but that macroeconomic conditions moved slightly worse in the United States than in Brazil. This strategy suggests a weak buy, deploying 50% of units into a long *ZS01* position at market open the next day, and 50% of units into a long *\^BVSP* position concurrently.
+
+#### Trade Execution
+
+The strategy's goal is clearly defined as taking advantage of daily overreactions in market price and as such, the most optimal way to accomplish this is by entering a brand new portfolio daily at market open and exiting that same portfolio entirely every market close. Though trade-intensive, this frequency of trading is both necessary to capture daily overreactions and not excessive in the grand scheme of market strategies. It's worth noting that in the case of a short position in *ZS01*, the money "gained" on sale at market open is reinvested along with the unallocated units into the chosen index, and as such in any short *ZS01* position the proportion of total units long in the index portion always equates to 100%. This amount is then reaccounted for at market close to create the correct daily unit gain.
+
+#### Factor Optimization
+
+```{r, echo=FALSE}
+# Note to evaluator: I couldn't get the function method we discussed in class to work so had to compute values manually. Would appreciate support after assignment is graded as to how I could've implemented that methodology. Thanks!
+optim <- expand.grid(
+  vstrong = seq(from = 0.9, to = 1.0, by = 0.1),
+  strong = seq(from = 0.7, to = 0.8, by = 0.1),
+  weak = seq(from = 0.3, to = 0.6, by = 0.1)
+) %>% 
+  dplyr::arrange(desc(vstrong), desc(strong))
+opt_vals <- c(134,131,128,124,146,143,139,135,124,121,118,114,135,132,128,125)
+optimization <- cbind(optim, opt_vals) %>% 
+  dplyr::arrange(desc(opt_vals)) %>% 
+  dplyr::slice_head(n=5)
+```
+
+The optimization process here involves observing the impact on ending units through the trade process of the training dataset that minor changes in the values of either the Very-Strong, Strong, or Weak portfolio allocation proportions. For these purposes, the training dataset refers to all days where observations are available for all five necessary assets, from the time period 2010-01-01 to 2019-12-31.
+
+A snippet of the optimization results is below:
+
+```{r, echo=FALSE}
+gt(optimization) %>% 
+  tab_header(title = "Optimal Portfolio Proportions") %>% 
+  gt_theme_538()
+```
+
+These parameters simply optimize the total ending units over the training data set. The strategy deals in daily portfolios and such has easily observable daily gains or losses and is optimized solely on the training data. These values do not optimize ending units on the testing data.
+
+# [The Results]{.underline}
+
+#### Strategy Training
+
+The strategy is trained on all days where data is available for the five assets necessary to generate a portfolio position. The time period stretches from 2010-01-01 to 2019-12-31; a total of 1960 individual days and thus 1960 daily positions. The result is as follows:
+
+```{r, echo=FALSE}
+vstrong <- 1
+strong <- 0.7
+weak <- 0.3
+
+optimal <- strats %>% 
+  dplyr::mutate(indic = dplyr::case_when(
+    (`CNYUSD=X` > `CNYBRL=X` & `CNYUSD=X` > 0 & `CNYBRL=X` > 0 & `^GSPC` > `^BVSP`) ~ weak,
+    (`CNYUSD=X` > `CNYBRL=X` & `CNYUSD=X` > 0 & `CNYBRL=X` > 0 & `^GSPC` < `^BVSP`) ~ weak,
+    (`CNYUSD=X` > `CNYBRL=X` & `CNYUSD=X` < 0 & `CNYBRL=X` < 0 & `^GSPC` > `^BVSP`) ~ strong,
+    (`CNYUSD=X` > `CNYBRL=X` & `CNYUSD=X` < 0 & `CNYBRL=X` < 0 & `^GSPC` < `^BVSP`) ~ weak,
+    (`CNYUSD=X` > `CNYBRL=X` & `CNYUSD=X` > 0 & `CNYBRL=X` < 0 & `^GSPC` > `^BVSP`) ~ vstrong,
+    (`CNYUSD=X` > `CNYBRL=X` & `CNYUSD=X` > 0 & `CNYBRL=X` < 0 & `^GSPC` < `^BVSP`) ~ strong,
+    (`CNYUSD=X` < `CNYBRL=X` & `CNYUSD=X` > 0 & `CNYBRL=X` > 0 & `^GSPC` > `^BVSP`) ~ -weak,
+    (`CNYUSD=X` < `CNYBRL=X` & `CNYUSD=X` > 0 & `CNYBRL=X` > 0 & `^GSPC` < `^BVSP`) ~ -weak,
+    (`CNYUSD=X` < `CNYBRL=X` & `CNYUSD=X` < 0 & `CNYBRL=X` < 0 & `^GSPC` > `^BVSP`) ~ -strong,
+    (`CNYUSD=X` < `CNYBRL=X` & `CNYUSD=X` < 0 & `CNYBRL=X` < 0 & `^GSPC` < `^BVSP`) ~ -weak,
+    (`CNYUSD=X` < `CNYBRL=X` & `CNYUSD=X` < 0 & `CNYBRL=X` > 0 & `^GSPC` > `^BVSP`) ~ -vstrong,
+    (`CNYUSD=X` < `CNYBRL=X` & `CNYUSD=X` < 0 & `CNYBRL=X` > 0 & `^GSPC` < `^BVSP`) ~ -strong,
+    (`CNYUSD=X` == `CNYBRL=X`) ~ 0)) %>%
+  tidyr::drop_na() %>% 
+  dplyr::mutate(hld = 1 + (ZS01 * dplyr::lag(indic))) %>% 
+  dplyr::mutate(hld_ret = hld*abs(dplyr::lag(indic))) %>% 
+  dplyr::mutate(index_amt = dplyr::case_when(
+    (dplyr::lag(indic) >= 0) ~ (1 - dplyr::lag(indic)),
+    (dplyr::lag(indic) < 0) ~ 1)) %>% 
+  dplyr::mutate(index_ret = dplyr::case_when(
+    (dplyr::lag(`^BVSP`) > dplyr::lag(`^GSPC`)) ~ (1 + `^BVSP`),
+    (dplyr::lag(`^BVSP`) < dplyr::lag(`^GSPC`)) ~ (1 + `^GSPC`)))
+optimal$units_rem_eod <- NA
+optimal$units_rem_eod[1] = 100
+for (i in 2:nrow(optimal)) {
+  if (optimal$index_amt[i] == 1) {
+    optimal$units_rem_eod[i] = (optimal$hld[i]*abs(optimal$indic[i-1])*optimal$units_rem_eod[i-1]) + (optimal$index_amt[i]*optimal$index_ret[i]*optimal$units_rem_eod[i-1]) - optimal$units_rem_eod[i-1]*abs(optimal$indic[i-1])
+  }
+  else {
+    optimal$units_rem_eod[i] = (optimal$hld[i]*abs(optimal$indic[i-1])*optimal$units_rem_eod[i-1]) + (optimal$index_amt[i]*optimal$index_ret[i]*optimal$units_rem_eod[i-1])
+  }
+}
+cutoff <- "2020-01-01"
+train <- optimal %>% dplyr::filter(date < cutoff)
+test <- optimal %>% dplyr::filter(date > cutoff)
+test$units_rem_eod <- NA
+test$units_rem_eod[1] = 100
+for (i in 2:nrow(test)) {
+  if (test$index_amt[i] == 1) {
+    test$units_rem_eod[i] = (test$hld[i]*abs(test$indic[i-1])*test$units_rem_eod[i-1]) + (test$index_amt[i]*test$index_ret[i]*test$units_rem_eod[i-1]) - test$units_rem_eod[i-1]*abs(test$indic[i-1])
+  }
+  else {
+    test$units_rem_eod[i] = (test$hld[i]*abs(test$indic[i-1])*test$units_rem_eod[i-1]) + (test$index_amt[i]*test$index_ret[i]*test$units_rem_eod[i-1])
+  }}
+
+gt(tail(train, n=5)) %>% 
+  tab_header(title = "Strategy Data : Training Set",
+             subtitle = "Final Five Days of Data") %>% 
+  gt_theme_538() %>% 
+  tab_options(table.align = "left")
+train_graph <- ggplot(train, aes(x = date, y = units_rem_eod)) +
+  geom_line() +
+  labs(title = "Strategy Results : Training Set") +
+  xlab("Date") +
+  ylab("Units")
+ggplotly(train_graph)
+```
+
+Though not particularly impressive in terms of return, it does illuminate the inter-workings of the strategy. To be perfectly clear, consider the return for 2019-12-23 as an example. It is calculated as follows:
+
+-   Previous day *ZS01* indicator (-1.0) \* Return from *ZS01* position today (0.994) \* Previous day closing units (149)
+
+-   \+
+
+-   Present day *INDEX* indicator (1.0) \* Return from *INDEX* position today (1.001) \* Previous day closing units (149)
+
+-   \-
+
+-   Previous day *ZS01* indicator (-1.0) \* Previous day closing units (149)
+
+This sums to 148.255 units, or rounded to 148 units. Note the handling of short positions in particular. Negative indicators are treated in absolute terms and accounted for in position returns.
+
+#### Strategy Testing
+
+The parameters from the training set, when applied to the testing data, return the following:
+
+```{r, echo=FALSE}
+gt(tail(test, n=5)) %>% 
+  tab_header(title = "Strategy Data : Testing Set",
+             subtitle = "Final Five Days of Data") %>% 
+  gt_theme_538() %>% 
+  tab_options(table.align = "left")
+test_graph <- ggplot(test, aes(x = date, y = units_rem_eod)) +
+  geom_line() +
+  labs(title = "Strategy Results : Testing Set") +
+  xlab("Date") +
+  ylab("Units")
+ggplotly(test_graph)
+```
+
+At the time of writing, over the testing time period, this strategy returns 62.7% or 16.01% yearly.
+
+#### Risk Appetite
+
+Recall the overall goal of this strategy: take advantage of daily overreactions in the *ZS* contract price. Portfolios reset every day so the most important metric should be the percentage of days where the strategy has positive returns ie) Percent Win. With so many observations, any value greater than 50% must have some trading substance to it.
+
+```{r, echo=FALSE}
+risk_tr <- train %>% 
+  dplyr::mutate(Outcome = dplyr::case_when(
+    (units_rem_eod > dplyr::lag(units_rem_eod)) ~ "Win",
+    (units_rem_eod < dplyr::lag(units_rem_eod)) ~ "Loss"
+  )) %>% 
+  tidyr::drop_na() %>% 
+  dplyr::group_by(Outcome) %>% 
+  dplyr::summarise(Count = n(), Proportion = n()/1954) %>% 
+  dplyr::arrange(desc(Outcome))
+gt(risk_tr) %>%
+  tab_header(title = "Day-by-Day Analysis",
+             subtitle = "Training Period") %>% 
+  gt_theme_538()
+```
+
+Over the training period specifically, this strategy wins 51.3% of the time. Despite the relatively low return over the training period, it still has a positive percent win metric. Compared over the testing period, note the difference in results:
+
+```{r, echo=FALSE}
+risk_ts <- test %>% 
+  dplyr::mutate(Outcome = dplyr::case_when(
+    (units_rem_eod > dplyr::lag(units_rem_eod)) ~ "Win",
+    (units_rem_eod < dplyr::lag(units_rem_eod)) ~ "Loss"
+  )) %>% 
+  tidyr::drop_na() %>% 
+  dplyr::group_by(Outcome) %>% 
+  dplyr::summarise(Count = n(), Proportion = n()/789) %>% 
+  dplyr::arrange(desc(Outcome))
+gt(risk_ts) %>%
+  tab_header(title = "Day-by-Day Analysis",
+             subtitle = "Testing Period") %>% 
+  gt_theme_538()
+```
+
+The percent win metric increases by 1.01%, and yearly return increases by 11.4%. Recall the Testing Period graph above: over the testing period, wins are big and losses are small. Regardless, the strategy is better than random and meets the requirements of a solid strategy in an insanely competitive market.
+
+# [The Takeaways]{.underline}
+
+My methodology has always been that markets are as close to perfect as possible and attempts to find holes in them are futile. Some of the smartest minds in the world with huge financial backing are searching for the tiniest edge and trying to beat them to the punch is impossible. Throughout the semester, I've struggled with this belief but in researching this strategy and creating it myself, I've reevaluated and I think I'm right but in context.
+
+Everything is priced in. The chance of some fictitious alien empire suddenly descending to Earth in October 2027 and demanding soybeans for November delivery, not by force but by abiding by the rules of mark-to-market settlements and quoting conventions, is priced into that November 2027 contract.
+
+The difference comes from psychology and again, from framing the problem. I set out to capture daily overreactions and knew immediately that my model would have consistently frequent trades. Everyday, prices are going to move and what matters fundamentally is human mass psychology and public perception. By quantifying these movements, I believe I've created a strategy that is capable of capturing these overreactions. It ultimately doesn't matter if Chinese buyers flock to American or Brazilian markets based on exchange rate changes: it matters if the market *thinks* they might.
+
+While the strategy performed exceptionally in the testing period, a result likely of a few factors like a bullish late-2020 economy, increased demand, and blind luck of the enforced testing period length, it is key to note that the strategy returned less units in the 2010-2019 training period, averaging a measly 4.62% yearly.
+
+Overall, I'm comfortable with my background research and would feel comfortable deploying some version of this strategy in a real-world environment. If I were to do so, I'd look immediately at running more simulations on optimal allocation values that are closer to true optimum, likely going to two or three decimal places. I'd also look at adding a fourth allocation value, dubbed Very Weak, for situations where extremely small positions in the *ZS01* contract are the most optimal but the strategy is forced to choose a Weak position. For communication purposes, this would also have no effect on the visualization opportunities as graphing optimality with three variables is typically too convoluted as it is for learning or simplicity. I'd also set up more meetings with industry professionals like Drew as their knowledge of how these markets actually work in the real world is invaluable from a trading perspective and their is no such thing as too much knowledge. Learning from logistics and operations people in particular would lend valuable insights into the American soybean distribution system. To summarize, I like the strategy I've created and believe in the methodology, but to deploy in the real-world with actual investor money at stake, I'd focus on improving it's optimality, risk definition, and background knowledge.
